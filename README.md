@@ -1,3 +1,5 @@
+View full documentation at https://docs.satellite.earth/
+
 ## Usage
 
 ``` js
