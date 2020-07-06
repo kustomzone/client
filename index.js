@@ -1,9 +1,9 @@
 const WebTorrent = require('webtorrent');
 const localforage = require('localforage');
 
-const Torrent = require('@satellite-earth/dev-torrent');
-const Signal = require('@satellite-earth/dev-signal');
-const Epoch = require('@satellite-earth/dev-epoch');
+const Torrent = require('@satellite-earth/torrent');
+const Signal = require('@satellite-earth/signal');
+const Epoch = require('@satellite-earth/epoch');
 
 class Client {
 
