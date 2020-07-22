@@ -356,7 +356,7 @@ class Client {
     await signal.sign(this.earth);
 
     // Send the signal to the world's endpoint
-		return await fetch(`${this.worlds[world].endpoint}/signal`, {
+		await fetch(`${this.worlds[world].endpoint}/signal`, {
 			body: JSON.stringify(signal.payload),
 			method: 'POST',
 			headers: {
@@ -364,6 +364,8 @@ class Client {
 				'Content-Type': 'application/json'
 			}
 		});
+
+		return signal;
 	}
 
 	// Download or start seeding a torrent
