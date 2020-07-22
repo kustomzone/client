@@ -347,7 +347,7 @@ class Client {
 	async signal (world, action, payload, options) {
 
 		// Target the signal
-		const target = await this.target(world, action);
+		const target = await this.target(world, action, options);
 
     // Construct the signal model
     const signal = new Signal(payload, target);
