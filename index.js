@@ -395,20 +395,22 @@ class Client {
 						data
 					}, eventParams);
 
-					// Check if the torrent matches any uninitialized
-					// states that the client is currently tracking
-					for (let w of Object.keys(this.worlds)) {
-						for (let initial of this.worlds[w].current.initial) {
+					// For each world that has been contacted
+					for (let world of Object.keys(this.worlds)) {
+
+						// Check if the torrent matches any uninitialized
+						// states that the client is currently tracking
+						for (let initial of this.worlds[world].current.initial) {
 
 							if ( // If so...
-								this.worlds[w].tracking.indexOf(initial.name) !== -1
+								this.worlds[world].tracking.indexOf(initial.name) !== -1
 								&& initial.infoHash === _torrent.infoHash
 								&& !initial.initialized
 							) {
 
 								// Rebuild the current epoch to include the new
 								// state now that the initial data is available
-								await this.worlds[w].current.build(null, async (state) => {
+								await this.worlds[world].current.build(null, async (state) => {
 
 									if (state.infoHash !== initial.infoHash) {
 										return;
@@ -420,10 +422,27 @@ class Client {
 								// Fire event with initialized state because the
 								// app probably wants to do something with it
 								this.event('state_initialized', {
-									state: this.worlds[w].current.state[initial.name],
-									epochNumber: this.worlds[w].current.number,
-									world: w,
+									state: this.worlds[world].current.state[initial.name],
+									epochNumber: this.worlds[world].current.number,
+									world
 								});
+							}
+						}
+
+						// Check if torrent matches an uninitialized historical epoch
+						for (let epoch of this.worlds[world].history) {
+
+							if ( // If so...
+								epoch.infoHash === _torrent.infoHash
+								&& !epoch.initialized
+							) {
+
+								// Inflate the epoch with the torrent data
+								await epoch.data(data);
+
+								// Fire event with initialized epoch because the
+								// app probably wants to do something with it
+								this.event('epoch_initialized', { epoch, world });
 							}
 						}
 					}
