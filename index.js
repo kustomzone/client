@@ -425,7 +425,7 @@ class Client {
 									state: this.worlds[world].current.state[initial.name],
 									epochNumber: this.worlds[world].current.number,
 									world
-								});
+								}, eventParams);
 							}
 						}
 
@@ -442,7 +442,7 @@ class Client {
 
 								// Fire event with initialized epoch because the
 								// app probably wants to do something with it
-								this.event('epoch_initialized', { epoch, world });
+								this.event('epoch_initialized', { epoch, world }, eventParams);
 							}
 						}
 					}
