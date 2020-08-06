@@ -349,13 +349,16 @@ class Client {
 		// Target the signal
 		const target = await this.target(world, action, options);
 
-    // Construct the signal model
-    const signal = new Signal(payload, target);
+		// Construct the signal model
+		const signal = new Signal(payload, target);
 
-    // Sign the signal to prove authorship
-    await signal.sign(this.earth);
+		// Sign the signal to prove authorship
+		await signal.sign(this.earth);
 
-    // Send the signal to the world's endpoint
+		// Add current epoch number as signal parameter
+		signal.addParams({ epochNumber: this.worlds[world].current.number });
+
+		// Send the signal to the world's endpoint
 		await fetch(`${this.worlds[world].endpoint}/signal`, {
 			body: JSON.stringify(signal.payload),
 			method: 'POST',
