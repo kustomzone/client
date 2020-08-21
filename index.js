@@ -358,8 +358,11 @@ class Client {
 		// Add current epoch number as signal parameter
 		signal.addParams({ epochNumber: this.worlds[world].current.number });
 
+		// Optional endpoint overrides world default
+		const endpoint = options.endpoint || this.worlds[world].endpoint;
+
 		// Send the signal to the world's endpoint
-		await fetch(`${this.worlds[world].endpoint}/signal`, {
+		await fetch(`${endpoint}/signal`, {
 			body: JSON.stringify(signal.payload),
 			method: 'POST',
 			headers: {
