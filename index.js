@@ -344,7 +344,7 @@ class Client {
 	}
 
 	// Send a signal to a world
-	async signal (world, action, payload, options) {
+	async signal (world, action, payload, options = {}) {
 
 		// Target the signal
 		const target = await this.target(world, action, options);
