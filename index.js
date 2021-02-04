@@ -5,6 +5,7 @@ const Torrent = require('@satellite-earth/torrent');
 const Signal = require('@satellite-earth/signal');
 const Epoch = require('@satellite-earth/epoch');
 
+
 class Client {
 
 	constructor (earth, event, config = {}) {
@@ -35,8 +36,11 @@ class Client {
 		// Optional function to get a webseed
 		this.getWebseed = config.getWebseed;
 
-		// Default tracker TODO should include other trackers in this list too!
+		// Default torrent trackers
 		this.defaultTrackers = config.defaultTrackers || [];
+
+		// Default namespace (federated v.s. top level)
+		this.defaultNamespace = config.defaultNamespace || null;
 
 		// In memory record of data keys speeds up ops
 		// when iterating across many torrent chunks
@@ -52,6 +56,11 @@ class Client {
 		this.event = (name, data, params) => {
 			if (event) { event(name, data, params); }
 		};
+
+		// If wallet connected, setup event to fire when
+		// user's name when a new address is selected so
+		// the application can update its UI if need be
+		this.handleAccountsChanged();
 
 		// Returns a new instance of the custom data store
 		// to save torrents in browser's persistent storage
@@ -165,7 +174,7 @@ class Client {
 			let signals = [];
 			let cachedEpoch;
 
-			if (!options.skipCache) {
+			if (!options.skipCache && !options.skipCurrent) {
 
 				// Check if there are any cached signals for this world
 				const cachedMeta = await this.syncCache.getItem(`world:${world}/meta`);
@@ -190,14 +199,39 @@ class Client {
 				}
 			}
 
-			// Only fetch signals which are timestamped later than last contact
-			const since = signals.length > 0 ? signals[signals.length - 1].blockNumber : null;
+			// Location of remote world instance
 			const { endpoint } = options;
+			let uri = `${endpoint}/contact`;
 
-			// Get meta data for previous epochs, and the
-			// signals and intial states of current epoch
-			let reply = await fetch(`${endpoint}/contact${since ? `?since=${since}` : ''}`);
+			if (options.skipCurrent) {
+
+				// Tell the server not to send the signals for the current
+				// epoch. This is useful for speeding up page load times
+				// when the client doesn't care about non-finalized data.
+				uri += '?signals=false';
+
+			} else if (signals.length > 0) { // If cached signals were found
+
+				// Only fetch signals which are timestamped later than last contact
+				uri += `?since=${signals[signals.length - 1].blockNumber}`;
+			}
+
+			// Get meta data for previous epochs and the
+			// signals/initial states of current epoch
+			let reply = await fetch(uri);
 			reply = await reply.json();
+
+			// Initialize namespace(s) as returned bey
+			// contacted world or as optional override
+			const ns = {
+				...(reply.current.ns || {}),
+				...(options.ns || {})
+			};
+
+			// Add nameservers reported by world
+			for (let name of Object.keys(ns)) {
+				await this.earth.addNameserver(ns[name]);
+			}
 
 			// Model historical epochs
 			const history = reply.history.map(past => {
@@ -245,9 +279,13 @@ class Client {
 			});
 			
 			// Assemble a model of the world at the present moment,
-			// including the source of signals and states tracked.
+			// including the source of signals and states tracked,
+			// adding custom contact response options if present.
 			this.worlds[world] = { history, current, tracking, endpoint };
-
+			if (typeof reply.options !== 'undefined') {
+				this.worlds[world].options = reply.options;
+			}
+			
 			// Cache up-to-date current epoch for future calls,
 			// overwriting cached signals from previous epochs.
 			await this.syncCache.setItem(`world:${world}/meta`, current.toString());
@@ -255,6 +293,19 @@ class Client {
 
 			// Fire event with newly contacted world
 			this.event('contact', { world, ...this.worlds[world] });
+
+			// If contacted world is using the default
+			// namespace, fire event identifying user
+			// based on currently selected address.
+			if (
+				options.identify !== false
+				&& this.earth.provider
+				&& this.earth.nameserver[this.defaultNamespace]
+			) {
+
+				const info = await this.earth.identify({ namespace: this.defaultNamespace });
+				this.event('identify', info);
+			}
 
 			// Iterate across the newly loaded world's states
 			for (let stateName of Object.keys(this.worlds[world].current.state)) {
@@ -281,7 +332,16 @@ class Client {
 				}
 			}
 
+			// Optionally, start loading specified number of previous epochs
+			if (typeof options.previous !== 'undefined') {
+				const h = this.worlds[world].history;
+				const n = options.previous === 'all'
+				|| options.previous > h.length ? h.length : options.previous;
+				for (let e = 0; e < n; e++) { this.load(h[e]); }
+			}
+
 		} catch (err) {
+			console.log(err);
 			this.event('contact_failed', { world, error: err });
 		}
 	}
@@ -289,58 +349,42 @@ class Client {
 	// Get the params for sending a signal
 	async target (world, action, options = {}) {
 
-		// The signal's intended world
-		const target = this.worlds[world];
+		let target;
 
-		// Get the uuid of last epoch
-		const epoch = target.current.ancestor;
+		try {
 
-		// Get the alias name of signal author
-		const sender = await this.earth.getActiveAlias();
+			// Acquire signal target
+			const resp = await fetch(`${options.endpoint || this.worlds[world].endpoint}/target`);
+			target = await resp.json();
+			target.action = action;
 
-		// Need to locate block to be used as timestamp
-		let locate = 'latest';
-		let attempts = 0;
-		let block;
-		
-		// Somewhat often the latest block becomes an "uncle" which means
-		// that even though it was mined it does not end up being included
-		// in the blockchain, causing the signal to never be picked up by
-		// the world it was sent to. The 'confirm' option is provided to
-		// mitigate this problem by telling the client how many blocks to
-		// step backward from the actual latest block. Higher numbers for
-		// confirm increase the certainty that a signal will be included,
-		// with the tradeoff that the signal timestamp will also be lagged.
-		// Also, sometimes the provider will fail to return *any* block at
-		// all — for this reason the client will make up to five attempts.
-		while (attempts < 5) {
+			// Add alias params as necessary
+			if (!options.anonymous) {
 
-			if (options.confirm) {
-				const latestNumber = await this.earth.web3.eth.getBlockNumber();
-				locate = latestNumber - options.confirm;
+				// Identify sender with reference to given
+				// namespace, falling back to top level
+				let namespace = options.namespace;
+				let sender = options.sender;
+
+				if (typeof namespace === 'undefined') {
+					namespace = this.defaultNamespace;
+				}
+
+				if (typeof options.sender === 'undefined') {
+					const info = await this.earth.identify({ namespace });
+					sender = info.name;
+				}
+
+				// Assign signal sender and namespace
+				target.namespace = namespace;
+				target.sender = sender;
 			}
 
-			// Try to get the block data
-			block = await this.earth.web3.eth.getBlock(locate);
-			if (block) { break; }
-			attempts++;
+		} catch (err) {
+			throw Error('Signal targeting failed', err);
 		}
 
-		// Return signal targeting data if successful,
-		// otherwise application should handle error
-		if (block) {
-			return {
-				world,
-				epoch,
-				sender,
-				action,
-				block: block.hash,
-				blockNumber: block.number,
-				timestamp: block.timestamp
-			};
-		} else {
-			throw Error('Signal targeting failed');
-		}
+		return target;
 	}
 
 	// Send a signal to a world
@@ -353,10 +397,10 @@ class Client {
 		const signal = new Signal(payload, target);
 
 		// Sign the signal to prove authorship
-		await signal.sign(this.earth);
+		await signal.sign(this.earth, options);
 
-		// Add current epoch number as signal parameter
-		signal.addParams({ epochNumber: this.worlds[world].current.number });
+		// Apply optional preflight checks
+		if (options.preflight) { await options.preflight(signal); }
 
 		// Optional endpoint overrides world default
 		const endpoint = options.endpoint || this.worlds[world].endpoint;
@@ -850,6 +894,47 @@ class Client {
 			});
 		});
 	}
+
+	// Default behavior to handle new account selected
+	handleAccountsChanged (f) {
+
+		if (!this.earth.provider) { return; }
+
+		const defaultHandler = async (addresses) => {
+
+			// NOTE: the "shouldUpdate" logic only fires the first event if
+			// this function is invoked twice within 100ms. This is only
+			// necessary to work around an unresolved bug in the metamask
+			// iOS mobile provider which incorrently double-calls the event
+			// See: https://github.com/MetaMask/metamask-mobile/issues/2025
+
+			let shouldUpdate;
+
+			if (typeof this._updatedAccounts === 'undefined') {
+				this._updatedAccounts = Date.now();
+				shouldUpdate = true;
+			} else if (Date.now() - this._updatedAccounts > 100) {
+				shouldUpdate = true;
+			}
+
+			if (shouldUpdate) {
+				
+				this._updatedAccounts = Date.now();
+
+				if (f) { f(addresses, this); } else {
+
+					const info = await this.earth.identify({
+						namespace: this.defaultNamespace,
+						address: addresses[0]
+					});
+
+					this.event('identify', info);
+				}
+			}				
+		};
+
+		this.earth.provider.on('accountsChanged', defaultHandler);
+	};
 }
 
 module.exports = Client;
